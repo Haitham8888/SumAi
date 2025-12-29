@@ -2,7 +2,7 @@ from flask import Flask, request, jsonify
 from transformers import AutoTokenizer, AutoModelForCausalLM, pipeline
 import torch
 import os
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 app = Flask(__name__)
 
@@ -249,6 +249,51 @@ def summarize_text(text: str, note: str, max_new_tokens: int = 150) -> str:
 
 
 # =========================
+# API Helpers
+# =========================
+def _process_single_payload(payload: dict) -> Tuple[dict, int]:
+    """يبني ردًا لطلب واحد ويعيده مع كود HTTP المقترح."""
+    text = (payload.get("text") or "").strip()
+    note = (payload.get("note") or "قم بتلخيص النص التالي بطريقة مختصرة ومفيدة").strip()
+
+    max_length = payload.get("max_length", 150)
+    try:
+        max_length = int(max_length)
+    except Exception:
+        max_length = 150
+
+    if not text:
+        return ({
+            "status": "error",
+            "message": "النص مفقود أو فارغ",
+            "original_text": text,
+            "note": note,
+            "device": DEVICE
+        }, 400)
+
+    try:
+        summary = summarize_text(text, note, max_new_tokens=max_length)
+    except Exception as err:  # تغطية أي خطأ غير متوقع أثناء التلخيص
+        return ({
+            "status": "error",
+            "message": f"خطأ في معالجة الطلب: {err}",
+            "original_text": text,
+            "note": note,
+            "device": DEVICE
+        }, 500)
+
+    return ({
+        "status": "success",
+        "original_text": text,
+        "note": note,
+        "summary": summary,
+        "text_length_chars": len(text),
+        "summary_length_chars": len(summary),
+        "device": DEVICE
+    }, 200)
+
+
+# =========================
 # API
 # =========================
 @app.route("/api/summarize", methods=["POST"])
@@ -262,34 +307,52 @@ def summarize_api():
     }
     """
     try:
-        data = request.get_json(silent=True)
-        if not data:
+        raw_data = request.get_json(silent=True)
+
+        if isinstance(raw_data, dict):
+            payloads = [raw_data]
+            is_batch = False
+        elif isinstance(raw_data, list):
+            if not raw_data:
+                return jsonify({"status": "error", "message": "قائمة الطلبات فارغة"}), 400
+            if not all(isinstance(item, dict) for item in raw_data):
+                return jsonify({"status": "error", "message": "كل عنصر داخل القائمة يجب أن يكون كائن JSON"}), 400
+            payloads = raw_data
+            is_batch = True
+        else:
             return jsonify({"status": "error", "message": "لم يتم إرسال بيانات JSON"}), 400
 
-        text = (data.get("text") or "").strip()
-        note = (data.get("note") or "قم بتلخيص النص التالي بطريقة مختصرة ومفيدة").strip()
+        responses = []
+        http_codes = []
 
-        # max_length عندك هو فعليًا max_new_tokens (عدد توكنات التوليد)
-        max_length = data.get("max_length", 150)
-        try:
-            max_length = int(max_length)
-        except Exception:
-            max_length = 150
+        for idx, payload in enumerate(payloads, start=1):
+            response_body, status_code = _process_single_payload(payload)
+            if is_batch:
+                response_body = {"entry_index": idx, **response_body}
+            responses.append(response_body)
+            http_codes.append(status_code)
 
-        if not text:
-            return jsonify({"status": "error", "message": "النص مفقود أو فارغ"}), 400
+        if not is_batch:
+            return jsonify(responses[0]), http_codes[0]
 
-        summary = summarize_text(text, note, max_new_tokens=max_length)
+        errors_count = sum(1 for code in http_codes if code != 200)
+        results_count = len(responses)
+
+        aggregate_status = "success"
+        http_status = 200
+        if errors_count == results_count:
+            aggregate_status = "error"
+            http_status = 400
+        elif errors_count:
+            aggregate_status = "partial"
+            http_status = 207
 
         return jsonify({
-            "status": "success",
-            "original_text": text,
-            "note": note,
-            "summary": summary,
-            "text_length_chars": len(text),
-            "summary_length_chars": len(summary),
-            "device": DEVICE
-        }), 200
+            "status": aggregate_status,
+            "results": responses,
+            "results_count": results_count,
+            "errors_count": errors_count
+        }), http_status
 
     except Exception as e:
         return jsonify({"status": "error", "message": f"خطأ في معالجة الطلب: {str(e)}"}), 500

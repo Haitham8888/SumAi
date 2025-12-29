@@ -1,0 +1,22 @@
+# GPU-enabled PyTorch (CUDA 12.1+)
+torch==2.6.0
+torchvision>=0.15.0
+torchaudio>=2.0.0
+
+# Transformers and ML libraries
+transformers==4.46.3
+tokenizers==0.20.3
+accelerate>=0.25.0
+bitsandbytes>=0.41.0
+compressed-tensors>=0.12.0
+sentencepiece
+protobuf
+
+# Web framework
+flask>=2.3.0
+
+# NLP and text processing
+sentence-transformers>=2.7.0
+
+# Other dependencies
+requests>=2.31.0
